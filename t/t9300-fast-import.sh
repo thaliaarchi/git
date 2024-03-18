@@ -2146,6 +2146,7 @@ test_expect_success 'Q: deny note on empty branch' '
 	EOF
 	test_must_fail git fast-import <input
 '
+
 ###
 ### series R (feature and option)
 ###
@@ -2794,7 +2795,7 @@ test_expect_success 'R: blob appears only once' '
 '
 
 ###
-### series S
+### series S (mark and path parsing)
 ###
 #
 # Make sure missing spaces and EOLs after mark references
@@ -3063,6 +3064,255 @@ test_expect_success 'S: ls with garbage after sha1 must fail' '
 	EOF
 	test_grep "space after tree-ish" err
 '
+
+#
+# Path parsing
+#
+# There are two sorts of ways a path can be parsed, depending on whether it is
+# the last field on the line. Additionally, ls without a <tree-ish> has a
+# special case. Test every occurrence of <path> in the grammar against every
+# error case.
+#
+
+#
+# Valid paths at the end of a line: filemodify, filedelete, filecopy (dest),
+# filerename (dest), and ls.
+#
+# commit :301 from root -- modify hello.c
+# commit :302 from :301 -- modify $path
+# commit :303 from :302 -- delete $path
+# commit :304 from :301 -- copy hello.c $path
+# commit :305 from :301 -- rename hello.c $path
+# ls :305 $path
+#
+test_path_eol_success () {
+	test="$1" path="$2" unquoted_path="$3"
+	test_expect_success "S: paths at EOL with $test must work" '
+		git fast-import --export-marks=marks.out <<-EOF >out 2>err &&
+		blob
+		mark :401
+		data <<BLOB
+		hello world
+		BLOB
+
+		blob
+		mark :402
+		data <<BLOB
+		hallo welt
+		BLOB
+
+		commit refs/heads/path-eol
+		mark :301
+		committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+		data <<COMMIT
+		initial commit
+		COMMIT
+		M 100644 :401 hello.c
+
+		commit refs/heads/path-eol
+		mark :302
+		committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+		data <<COMMIT
+		commit filemodify
+		COMMIT
+		from :301
+		M 100644 :402 '"$path"'
+
+		commit refs/heads/path-eol
+		mark :303
+		committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+		data <<COMMIT
+		commit filedelete
+		COMMIT
+		from :302
+		D '"$path"'
+
+		commit refs/heads/path-eol
+		mark :304
+		committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+		data <<COMMIT
+		commit filecopy dest
+		COMMIT
+		from :301
+		C hello.c '"$path"'
+
+		commit refs/heads/path-eol
+		mark :305
+		committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+		data <<COMMIT
+		commit filerename dest
+		COMMIT
+		from :301
+		R hello.c '"$path"'
+
+		ls :305 '"$path"'
+		EOF
+
+		commit_m=$(grep :302 marks.out | cut -d\  -f2) &&
+		commit_d=$(grep :303 marks.out | cut -d\  -f2) &&
+		commit_c=$(grep :304 marks.out | cut -d\  -f2) &&
+		commit_r=$(grep :305 marks.out | cut -d\  -f2) &&
+		blob1=$(grep :401 marks.out | cut -d\  -f2) &&
+		blob2=$(grep :402 marks.out | cut -d\  -f2) &&
+
+		( printf "100644 blob $blob2\t'"$unquoted_path"'\n" &&
+		  printf "100644 blob $blob1\thello.c\n" ) | sort >tree_m.exp &&
+		git ls-tree $commit_m | sort >tree_m.out &&
+		test_cmp tree_m.exp tree_m.out &&
+
+		printf "100644 blob $blob1\thello.c\n" >tree_d.exp &&
+		git ls-tree $commit_d >tree_d.out &&
+		test_cmp tree_d.exp tree_d.out &&
+
+		( printf "100644 blob $blob1\t'"$unquoted_path"'\n" &&
+		  printf "100644 blob $blob1\thello.c\n" ) | sort >tree_c.exp &&
+		git ls-tree $commit_c | sort >tree_c.out &&
+		test_cmp tree_c.exp tree_c.out &&
+
+		printf "100644 blob $blob1\t'"$unquoted_path"'\n" >tree_r.exp &&
+		git ls-tree $commit_r >tree_r.out &&
+		test_cmp tree_r.exp tree_r.out &&
+
+		test_cmp out tree_r.exp &&
+
+		git branch -D path-eol
+	'
+}
+
+test_path_eol_success 'quoted spaces'   '" hello world.c "' ' hello world.c '
+test_path_eol_success 'unquoted spaces' ' hello world.c '   ' hello world.c '
+
+#
+# Valid paths before a space: filecopy (source) and filerename (source).
+#
+# commit :301 from root -- modify $path
+# commit :302 from :301 -- copy $path hello2.c
+# commit :303 from :301 -- rename $path hello2.c
+#
+test_path_space_success () {
+	test="$1" path="$2" unquoted_path="$3"
+	test_expect_success "S: paths before space with $test must work" '
+		git fast-import --export-marks=marks.out <<-EOF 2>err &&
+		blob
+		mark :401
+		data <<BLOB
+		hello world
+		BLOB
+
+		commit refs/heads/path-space
+		mark :301
+		committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+		data <<COMMIT
+		initial commit
+		COMMIT
+		M 100644 :401 '"$path"'
+
+		commit refs/heads/path-space
+		mark :302
+		committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+		data <<COMMIT
+		commit filecopy source
+		COMMIT
+		from :301
+		C '"$path"' hello2.c
+
+		commit refs/heads/path-space
+		mark :303
+		committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+		data <<COMMIT
+		commit filerename source
+		COMMIT
+		from :301
+		R '"$path"' hello2.c
+
+		EOF
+
+		commit_c=$(grep :302 marks.out | cut -d\  -f2) &&
+		commit_r=$(grep :303 marks.out | cut -d\  -f2) &&
+		blob=$(grep :401 marks.out | cut -d\  -f2) &&
+
+		( printf "100644 blob $blob\t'"$unquoted_path"'\n" &&
+		  printf "100644 blob $blob\thello2.c\n" ) | sort >tree_c.exp &&
+		git ls-tree $commit_c | sort >tree_c.out &&
+		test_cmp tree_c.exp tree_c.out &&
+
+		printf "100644 blob $blob\thello2.c\n" >tree_r.exp &&
+		git ls-tree $commit_r >tree_r.out &&
+		test_cmp tree_r.exp tree_r.out &&
+
+		git branch -D path-space
+	'
+}
+
+test_path_space_success 'quoted spaces'      '" hello world.c "' ' hello world.c '
+test_path_space_success 'no unquoted spaces' 'hello_world.c'     'hello_world.c'
+
+#
+# Test a single commit change with an invalid path. Run it with all occurrences
+# of <path> in the grammar against all error kinds.
+#
+test_path_fail () {
+	what="$1" path="$2" err_grep="$3"
+	test_expect_success "S: $change with $what must fail" '
+		test_must_fail git fast-import <<-EOF 2>err &&
+		blob
+		mark :1
+		data <<BLOB
+		hello world
+		BLOB
+
+		commit refs/heads/S-path-fail
+		mark :2
+		committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+		data <<COMMIT
+		commit setup
+		COMMIT
+		M 100644 :1 hello.c
+
+		commit refs/heads/S-path-fail
+		committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+		data <<COMMIT
+		commit with bad path
+		COMMIT
+		from :2
+		'"$prefix$path$suffix"'
+		EOF
+
+		test_grep '"'$err_grep'"' err
+	'
+}
+
+test_path_base_fail () {
+	test_path_fail 'unclosed " in '"$field"          '"hello.c'    "Invalid $field"
+	test_path_fail "invalid escape in quoted $field" '"hello\xff"' "Invalid $field"
+}
+test_path_eol_quoted_fail () {
+	test_path_base_fail
+	test_path_fail "garbage after quoted $field" '"hello.c"x' "Garbage after $field"
+	test_path_fail "space after quoted $field"   '"hello.c" ' "Garbage after $field"
+}
+test_path_eol_fail () {
+	test_path_eol_quoted_fail
+	test_path_fail 'empty unquoted path' '' "Missing $field"
+}
+test_path_space_fail () {
+	test_path_base_fail
+	test_path_fail 'empty unquoted path' '' "Missing $field"
+	test_path_fail "missing space after quoted $field" '"hello.c"x' "Missing space after $field"
+}
+
+change=filemodify       prefix='M 100644 :1 ' field=path   suffix=''         test_path_eol_fail
+change=filedelete       prefix='D '           field=path   suffix=''         test_path_eol_fail
+change=filecopy         prefix='C '           field=source suffix=' world.c' test_path_space_fail
+change=filecopy         prefix='C hello.c '   field=dest   suffix=''         test_path_eol_fail
+change=filerename       prefix='R '           field=source suffix=' world.c' test_path_space_fail
+change=filerename       prefix='R hello.c '   field=dest   suffix=''         test_path_eol_fail
+change='ls (in commit)' prefix='ls :2 '       field=path   suffix=''         test_path_eol_fail
+
+# When 'ls' has no <tree-ish>, the <path> must be quoted.
+change='ls (without tree-ish in commit)' prefix='ls ' field=path suffix='' \
+test_path_eol_quoted_fail &&
+test_path_fail 'empty unquoted path' '' "Invalid dataref"
 
 ###
 ### series T (ls)
