@@ -3285,6 +3285,7 @@ test_path_fail () {
 test_path_base_fail () {
 	test_path_fail 'unclosed " in '"$field"          '"hello.c'    "Invalid $field"
 	test_path_fail "invalid escape in quoted $field" '"hello\xff"' "Invalid $field"
+	test_path_fail "escaped NUL in quoted $field"    '"hello\000"' "NUL in $field"
 }
 test_path_eol_quoted_fail () {
 	test_path_base_fail
