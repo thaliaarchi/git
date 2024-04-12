@@ -2269,6 +2269,8 @@ static void parse_path(struct strbuf *sb, const char *p, const char **endp,
 	if (*p == '"') {
 		if (unquote_c_style(sb, p, endp))
 			die("Invalid %s: %s", field, command_buf.buf);
+		if (strlen(sb->buf) != sb->len)
+			die("NUL in %s: %s", field, command_buf.buf);
 	} else {
 		if (include_spaces)
 			*endp = p + strlen(p);
